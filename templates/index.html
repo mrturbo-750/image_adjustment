@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Resizer Service</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #f0f2f5; }
+        h1 { color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        
+        /* Tabs */
+        .tabs { display: flex; margin-bottom: 15px; border-bottom: 2px solid #ddd; }
+        .tab { padding: 10px 20px; cursor: pointer; font-weight: bold; color: #666; }
+        .tab.active { color: #007bff; border-bottom: 2px solid #007bff; margin-bottom: -2px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Form Elements */
+        .form-group { margin-bottom: 15px; position: relative; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #444; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        
+        /* Buttons */
+        .btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+        .btn-primary { background-color: #007bff; color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+        .btn-secondary { background-color: #6c757d; color: white; }
+        .btn-danger { background-color: #dc3545; color: white; }
+        .btn-browse { position: absolute; right: 5px; top: 32px; background: #e9ecef; padding: 5px 10px; border: 1px solid #ced4da; cursor: pointer; }
+
+        /* Output Logs */
+        #output, #restoreOutput { margin-top: 20px; padding: 15px; background: #2d2d2d; color: #f8f8f2; font-family: monospace; white-space: pre-wrap; border-radius: 4px; max-height: 400px; overflow-y: auto; }
+        .log-success { color: #50fa7b; }
+        .log-error { color: #ff5555; }
+        .log-info { color: #8be9fd; }
+
+        /* Modal for Folder Picker */
+        #modalOverlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        #folderModal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; width: 500px; max-height: 70vh; padding: 20px; border-radius: 8px; display: flex; flex-direction: column; }
+        #folderList { flex: 1; overflow-y: auto; border: 1px solid #eee; margin: 10px 0; padding: 5px; }
+        .folder-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .folder-item:hover { background: #f0f8ff; }
+
+        /* Restore Table */
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+
+    <h1>Image Tool: Resize & Backup</h1>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('resize')">Resize Images</div>
+        <div class="tab" onclick="switchTab('restore')">Restore Backups</div>
+    </div>
+
+    <div id="resize" class="tab-content active card">
+        <div class="form-group">
+            <label for="folderPath">Folder Path</label>
+            <input type="text" id="folderPath" placeholder="Click Browse or paste path...">
+            <button class="btn-browse" onclick="openFolderPicker('folderPath')">📂 Browse</button>
+        </div>
+
+        <div class="form-group">
+            <label for="imageName">Target Image Name (e.g., banner.jpg)</label>
+            <input type="text" id="imageName">
+        </div>
+
+        <div style="display: flex; gap: 20px;">
+            <div class="form-group" style="flex: 1;">
+                <label for="width">Width (px)</label>
+                <input type="number" id="width" value="800">
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label for="height">Height (px)</label>
+                <input type="number" id="height" value="600">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label style="display:inline-flex; align-items: center; cursor: pointer;">
+                <input type="checkbox" id="dryRun" checked style="width:auto; margin-right: 10px;">
+                <strong>Dry Run Mode</strong> (Simulate only - No files will be changed)
+            </label>
+        </div>
+
+        <button class="btn btn-primary" onclick="triggerScan()">Start Process</button>
+        
+        <div id="output"></div>
+    </div>
+
+    <div id="restore" class="tab-content card">
+        <p>Scan a folder to find backups (`.backup_timestamp`) and restore them to their original names.</p>
+        
+        <div class="form-group">
+            <label for="restorePath">Folder Path</label>
+            <input type="text" id="restorePath" placeholder="Click Browse or paste path...">
+            <button class="btn-browse" onclick="openFolderPicker('restorePath')">📂 Browse</button>
+        </div>
+
+        <button class="btn btn-secondary" onclick="scanForBackups()">Find Backups</button>
+        
+        <div id="restoreList" style="margin-top:20px;"></div>
+        
+        <button id="btnRestoreSelected" class="btn btn-danger" style="display:none; margin-top:10px;" onclick="restoreSelected()">Restore Selected Files</button>
+        
+        <div id="restoreOutput"></div>
+    </div>
+
+    <div id="modalOverlay">
+        <div id="folderModal">
+            <h3>Select Folder</h3>
+            <div style="margin-bottom: 10px; font-weight:bold;" id="currentBrowserPath">Loading...</div>
+            <div id="folderList"></div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="selectCurrentFolder()">Select This Folder</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- GLOBAL STATE ---
+        let targetInputId = ''; // Which input is receiving the folder path
+        let currentBrowserDir = ''; // Current dir in modal
+        let foundBackups = []; // Store backup data
+
+        // --- TABS ---
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            // Highlight tab button (simple logic)
+            const tabs = document.querySelectorAll('.tab');
+            if(tabName === 'resize') tabs[0].classList.add('active');
+            else tabs[1].classList.add('active');
+        }
+
+        // --- FOLDER BROWSER LOGIC ---
+        function openFolderPicker(inputId) {
+            targetInputId = inputId;
+            document.getElementById('modalOverlay').style.display = 'block';
+            // Start browsing at current value or home
+            const currentVal = document.getElementById(inputId).value;
+            loadFolders(currentVal);
+        }
+
+        function closeModal() {
+            document.getElementById('modalOverlay').style.display = 'none';
+        }
+
+        async function loadFolders(path) {
+            try {
+                const res = await fetch('/browse', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path: path })
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+
+                currentBrowserDir = data.current_path;
+                document.getElementById('currentBrowserPath').innerText = currentBrowserDir;
+                
+                const list = document.getElementById('folderList');
+                list.innerHTML = '';
+
+                // Add "Up" button
+                if (data.parent_path) {
+                    const upDiv = document.createElement('div');
+                    upDiv.className = 'folder-item';
+                    upDiv.innerText = '📁 .. (Go Up)';
+                    upDiv.onclick = () => loadFolders(data.parent_path);
+                    list.appendChild(upDiv);
+                }
+
+                data.folders.forEach(folder => {
+                    const div = document.createElement('div');
+                    div.className = 'folder-item';
+                    div.innerText = '📁 ' + folder;
+                    div.onclick = () => loadFolders(currentBrowserDir + (currentBrowserDir.endsWith('/') || currentBrowserDir.endsWith('\\') ? '' : '/') + folder);
+                    list.appendChild(div);
+                });
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function selectCurrentFolder() {
+            document.getElementById(targetInputId).value = currentBrowserDir;
+            closeModal();
+        }
+
+        // --- RESIZE LOGIC ---
+        async function triggerScan() {
+            const output = document.getElementById('output');
+            output.innerHTML = 'Running...';
+            
+            const payload = {
+                folder_path: document.getElementById('folderPath').value,
+                image_name: document.getElementById('imageName').value,
+                width: document.getElementById('width').value,
+                height: document.getElementById('height').value,
+                dry_run: document.getElementById('dryRun').checked
+            };
+
+            const res = await fetch('/scan-and-resize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+
+            let logHtml = `<strong>Status:</strong> ${data.status} <br>`;
+            logHtml += `<strong>Files Found:</strong> ${data.files_found} <br>`;
+            logHtml += `<strong>Processed:</strong> ${data.processed} <br>`;
+            logHtml += `<strong>Mode:</strong> ${data.dry_run ? "DRY RUN (No changes made)" : "LIVE RUN"} <br><hr>`;
+            
+            if(data.logs) {
+                data.logs.forEach(line => {
+                    if(line.includes("[OK]")) logHtml += `<span class="log-success">${line}</span><br>`;
+                    else if(line.includes("[FAIL]")) logHtml += `<span class="log-error">${line}</span><br>`;
+                    else logHtml += `<span class="log-info">${line}</span><br>`;
+                });
+            }
+            output.innerHTML = logHtml;
+        }
+
+        // --- RESTORE LOGIC ---
+        async function scanForBackups() {
+            const path = document.getElementById('restorePath').value;
+            const res = await fetch('/scan-backups', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ folder_path: path })
+            });
+            const data = await res.json();
+            foundBackups = data.backups;
+
+            const listDiv = document.getElementById('restoreList');
+            if (foundBackups.length === 0) {
+                listDiv.innerHTML = "No backups found in this folder.";
+                document.getElementById('btnRestoreSelected').style.display = 'none';
+                return;
+            }
+
+            let html = `<table>
+                <thead><tr>
+                    <th><input type="checkbox" onclick="toggleAll(this)"></th>
+                    <th>Backup File</th>
+                    <th>Original Target</th>
+                </tr></thead><tbody>`;
+            
+            foundBackups.forEach((b, index) => {
+                html += `<tr>
+                    <td><input type="checkbox" class="restore-chk" value="${index}"></td>
+                    <td>${b.filename}</td>
+                    <td>${b.original_path}</td>
+                </tr>`;
+            });
+            html += `</tbody></table>`;
+            
+            listDiv.innerHTML = html;
+            document.getElementById('btnRestoreSelected').style.display = 'block';
+        }
+
+        function toggleAll(source) {
+            document.querySelectorAll('.restore-chk').forEach(c => c.checked = source.checked);
+        }
+
+        async function restoreSelected() {
+            const selectedIndices = Array.from(document.querySelectorAll('.restore-chk:checked')).map(c => c.value);
+            if(selectedIndices.length === 0) {
+                alert("Please select files to restore.");
+                return;
+            }
+
+            if(!confirm(`Are you sure you want to overwrite ${selectedIndices.length} files with their backups?`)) return;
+
+            const filesToRestore = selectedIndices.map(i => foundBackups[i]);
+            
+            const res = await fetch('/restore', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ files: filesToRestore })
+            });
+            
+            const result = await res.json();
+            const out = document.getElementById('restoreOutput');
+            out.innerHTML = `<strong>Restored:</strong> ${result.restored} files.<br><hr>` + result.logs.join('<br>');
+        }
+    </script>
+</body>
+</html>
