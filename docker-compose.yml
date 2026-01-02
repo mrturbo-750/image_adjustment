@@ -1,0 +1,18 @@
+services:
+  web:
+    # Build the image from the current directory
+    build: . 
+    
+    # name the container for easy finding later
+    container_name: image_adjustment
+    
+    # Restart automatically if the server reboots or the app crashes
+    restart: always
+    
+    # Map port 80 on the server to port 5002 inside the container
+    ports:
+      - "5002:5002"
+    
+    # (Optional) Mount the code as a volume for development
+    # volumes:
+    #   - .:/app
