@@ -5,6 +5,7 @@ import shutil
 import logging
 import platform
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
 
@@ -231,6 +232,7 @@ def scan_and_resize():
     height = data.get('height')
     dry_run = data.get('dry_run', False)
     smb_id = data.get('smb_id')
+    max_workers = data.get('max_workers', 10)
 
     if not all([folder_path, target_filename, width, height]):
         return jsonify({"error": "Missing required fields"}), 400
@@ -242,24 +244,25 @@ def scan_and_resize():
         setup_smb_session(smb_id)
         is_smb = True
         walker = smbclient.walk
-        # Check dir using smbclient
         if not smbclient.path.isdir(folder_path):
              return jsonify({"error": "Directory does not exist"}), 404
     elif not os.path.isdir(folder_path):
         return jsonify({"error": "Directory does not exist"}), 404
 
     found_files = []
+    files_to_process = []
     processed_count = 0
     details = [] 
 
     logging.info(f"Scan started in {folder_path}. Dry Run: {dry_run}")
 
-    # Recursive Scan
+    # 1. First, find all the files to process
     for root, dirs, files in walker(folder_path):
         logging.info(f"Scanning directory: {root}")
         details.append(f"[SCAN] Scanning: {root}")
         if target_filename in files:
             full_path = os.path.join(root, target_filename)
+            found_files.append(full_path)
             
             # --- SKIP IF BACKUP EXISTS ---
             backup_prefix = f"{target_filename}.backup_"
@@ -269,22 +272,33 @@ def scan_and_resize():
                 msg = "Skipped (Backup already exists)"
                 details.append(f"[SKIPPED] {full_path} -> {msg}")
                 logging.info(f"Skipping {full_path} because a backup was found.")
-                found_files.append(full_path)
                 continue
-            # -----------------------------
+            
+            files_to_process.append(full_path)
 
-            found_files.append(full_path)
-            
-            success, msg = process_image(full_path, int(width), int(height), dry_run, is_smb=is_smb)
-            
-            status_str = "OK" if success else "FAIL"
-            details.append(f"[{status_str}] {full_path} -> {msg}")
-            
-            if success:
-                processed_count += 1
-                logging.info(f"Processed: {full_path} - {msg}")
-            else:
-                logging.error(f"Failed: {full_path} - {msg}")
+    # 2. Now, process the files in parallel
+    if files_to_process:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_path = {
+                executor.submit(process_image, path, int(width), int(height), dry_run, is_smb): path 
+                for path in files_to_process
+            }
+
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                try:
+                    success, msg = future.result()
+                    status_str = "OK" if success else "FAIL"
+                    details.append(f"[{status_str}] {path} -> {msg}")
+                    
+                    if success:
+                        processed_count += 1
+                        logging.info(f"Processed: {path} - {msg}")
+                    else:
+                        logging.error(f"Failed: {path} - {msg}")
+                except Exception as exc:
+                    logging.error(f'{path} generated an exception: {exc}')
+                    details.append(f"[FAIL] {path} -> {exc}")
 
     result = {
         "status": "completed",
@@ -292,7 +306,7 @@ def scan_and_resize():
         "scanned_path": folder_path,
         "files_found": len(found_files),
         "processed": processed_count,
-        "logs": details 
+        "logs": sorted(details)
     }
     
     return jsonify(result)
