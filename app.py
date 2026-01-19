@@ -27,6 +27,7 @@ logging.basicConfig(
 
 # --- CONFIGURATION ---
 SMB_CONFIG_FILE = "smb_configs.json"
+APP_VERSION = "1.0.0"
 
 def load_smb_configs():
     if not os.path.exists(SMB_CONFIG_FILE):
@@ -62,6 +63,10 @@ def setup_smb_session(smb_id):
     return config
 
 # --- ROUTES ---
+
+@app.context_processor
+def inject_version():
+    return dict(version=APP_VERSION)
 
 @app.route('/')
 def index():
