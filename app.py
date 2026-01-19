@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 
 # --- CONFIGURATION ---
-SMB_CONFIG_FILE = "smb_configs.json"
+SMB_CONFIG_FILE = "data/smb_configs.json"
 APP_VERSION = "1.0.0"
 
 def load_smb_configs():
@@ -256,6 +256,8 @@ def scan_and_resize():
 
     # Recursive Scan
     for root, dirs, files in walker(folder_path):
+        logging.info(f"Scanning directory: {root}")
+        details.append(f"[SCAN] Scanning: {root}")
         if target_filename in files:
             full_path = os.path.join(root, target_filename)
             

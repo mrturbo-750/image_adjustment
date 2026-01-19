@@ -13,6 +13,10 @@ services:
     ports:
       - "5002:5002"
     
+    # Mount the data volume to persist configs
+    volumes:
+      - ./data:/app/data
+    
     # (Optional) Mount the code as a volume for development
     # volumes:
     #   - .:/app
