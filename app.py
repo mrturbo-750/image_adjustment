@@ -179,25 +179,46 @@ def manage_smb_configs():
 
     return jsonify({"error": "Invalid action"}), 400
 
-def process_image(file_path, width, height, dry_run=False):
-    """Backs up and resizes a single image. respecting dry_run."""
+def process_image(file_path, width, height, dry_run=False, is_smb=False):
+    """Backs up and resizes a single image, respecting dry_run and SMB paths."""
     try:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         backup_path = f"{file_path}.backup_{timestamp}"
         
+        # Determine which basename function to use
+        basename = os.path.basename if not is_smb else smb_path.basename
+
         if dry_run:
-            return True, f"[DRY RUN] Would backup to {os.path.basename(backup_path)} and resize to {width}x{height}"
+            return True, f"[DRY RUN] Would backup to {basename(backup_path)} and resize to {width}x{height}"
 
         # 1. Perform Backup
-        shutil.copy2(file_path, backup_path)
+        if is_smb:
+            smb_shutil.copyfile(file_path, backup_path)
+        else:
+            shutil.copy2(file_path, backup_path)
         
         # 2. Resize Image
-        with Image.open(file_path) as img:
-            resized_img = img.resize((width, height))
-            resized_img.save(file_path)
+        if is_smb:
+            # For SMB, we need to work with file-like objects
+            with smbclient.open_file(file_path, 'rb') as f:
+                img = Image.open(f)
+                resized_img = img.resize((width, height))
+                
+                # Save back to SMB share
+                with io.BytesIO() as buffer:
+                    resized_img.save(buffer, format=img.format)
+                    buffer.seek(0)
+                    with smbclient.open_file(file_path, 'wb') as remote_f:
+                        shutil.copyfileobj(buffer, remote_f)
+        else:
+            with Image.open(file_path) as img:
+                img_format = img.format
+                resized_img = img.resize((width, height))
+                resized_img.save(file_path, format=img_format)
             
-        return True, f"Success (Backup: {os.path.basename(backup_path)})"
+        return True, f"Success (Backup: {basename(backup_path)})"
     except Exception as e:
+        logging.error(f"Error processing {file_path}: {e}")
         return False, str(e)
 
 @app.route('/scan-and-resize', methods=['POST'])
