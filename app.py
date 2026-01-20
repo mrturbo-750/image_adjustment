@@ -4,9 +4,12 @@ import json
 import shutil
 import logging
 import platform
+import uuid
+import threading
+from queue import Queue
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response
 from PIL import Image
 
 # SMB Imports
@@ -15,6 +18,9 @@ from smbclient import path as smb_path
 import smbclient
 
 app = Flask(__name__)
+
+# In-memory store for task queues
+task_queues = {}
 
 # Configure Logging
 logging.basicConfig(
@@ -25,10 +31,29 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-
 # --- CONFIGURATION ---
 SMB_CONFIG_FILE = "data/smb_configs.json"
 APP_VERSION = "1.0.0"
+
+@app.route('/log-stream/<task_id>')
+def log_stream(task_id):
+    def stream():
+        q = task_queues.get(task_id)
+        if not q:
+            yield f"data: {json.dumps({'type': 'log', 'level': 'error', 'message': 'Task ID not found.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'EOF'})}\n\n"
+            return
+
+        while True:
+            message = q.get()
+            yield f"data: {json.dumps(message)}\n\n"
+            if isinstance(message, dict) and message.get("type") == "EOF":
+                break
+        
+        if task_id in task_queues:
+            del task_queues[task_id]
+
+    return Response(stream(), mimetype='text/event-stream')
 
 def load_smb_configs():
     if not os.path.exists(SMB_CONFIG_FILE):
@@ -187,7 +212,7 @@ def process_image(file_path, width, height, dry_run=False, is_smb=False):
         backup_path = f"{file_path}.backup_{timestamp}"
         
         # Determine which basename function to use
-        basename = os.path.basename if not is_smb else smb_path.basename
+        basename = os.path.basename
 
         if dry_run:
             return True, f"[DRY RUN] Would backup to {basename(backup_path)} and resize to {width}x{height}"
@@ -200,12 +225,10 @@ def process_image(file_path, width, height, dry_run=False, is_smb=False):
         
         # 2. Resize Image
         if is_smb:
-            # For SMB, we need to work with file-like objects
             with smbclient.open_file(file_path, 'rb') as f:
                 img = Image.open(f)
                 resized_img = img.resize((width, height))
                 
-                # Save back to SMB share
                 with io.BytesIO() as buffer:
                     resized_img.save(buffer, format=img.format)
                     buffer.seek(0)
@@ -222,96 +245,114 @@ def process_image(file_path, width, height, dry_run=False, is_smb=False):
         logging.error(f"Error processing {file_path}: {e}")
         return False, str(e)
 
+def scan_and_resize_task(task_id, folder_path, target_filename, width, height, dry_run, smb_id, max_workers, detailed_logs):
+    q = task_queues[task_id]
+
+    def log(level, message):
+        q.put({'type': 'log', 'level': level, 'message': message})
+
+    try:
+        if not all([folder_path, target_filename, width, height]):
+            log('error', "Missing required fields")
+            q.put({'type': 'EOF'})
+            return
+
+        is_smb = False
+        walker = os.walk
+        
+        if smb_id:
+            try:
+                setup_smb_session(smb_id)
+                is_smb = True
+                walker = smbclient.walk
+                if not smbclient.path.isdir(folder_path):
+                    log('error', "Directory does not exist")
+                    q.put({'type': 'EOF'})
+                    return
+            except Exception as e:
+                log('error', f"SMB connection failed: {e}")
+                q.put({'type': 'EOF'})
+                return
+        elif not os.path.isdir(folder_path):
+            log('error', "Directory does not exist")
+            q.put({'type': 'EOF'})
+            return
+
+        found_files = []
+        files_to_process = []
+        processed_count = 0
+
+        log('info', f"Scan started in {folder_path}. Dry Run: {dry_run}")
+
+        for root, dirs, files in walker(folder_path):
+            if detailed_logs:
+                log('scan', f"Scanning: {root}")
+            if target_filename in files:
+                full_path = os.path.join(root, target_filename)
+                found_files.append(full_path)
+                
+                backup_prefix = f"{target_filename}.backup_"
+                has_backup = any(f.startswith(backup_prefix) for f in files)
+                
+                if has_backup:
+                    msg = "Skipped (Backup already exists)"
+                    log('skipped', f"{full_path} -> {msg}")
+                    continue
+                
+                files_to_process.append(full_path)
+
+        if files_to_process:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_path = {
+                    executor.submit(process_image, path, int(width), int(height), dry_run, is_smb): path 
+                    for path in files_to_process
+                }
+
+                for future in as_completed(future_to_path):
+                    path = future_to_path[future]
+                    try:
+                        success, msg = future.result()
+                        status_str = "OK" if success else "FAIL"
+                        log('success' if success else 'error', f"[{status_str}] {path} -> {msg}")
+                        
+                        if success:
+                            processed_count += 1
+                    except Exception as exc:
+                        log('error', f'[FAIL] {path} -> {exc}')
+        
+        summary_data = {
+            "files_found": len(found_files),
+            "processed": processed_count,
+        }
+        q.put({'type': 'summary', 'data': summary_data})
+        q.put({'type': 'EOF'})
+
+    except Exception as e:
+        log('error', f"An unexpected error occurred: {str(e)}")
+        q.put({'type': 'EOF'})
+
 @app.route('/scan-and-resize', methods=['POST'])
 def scan_and_resize():
     data = request.get_json()
+    task_id = str(uuid.uuid4())
+    task_queues[task_id] = Queue()
 
-    folder_path = data.get('folder_path')
-    target_filename = data.get('image_name')
-    width = data.get('width')
-    height = data.get('height')
-    dry_run = data.get('dry_run', False)
-    smb_id = data.get('smb_id')
-    max_workers = data.get('max_workers', 10)
-    detailed_logs = data.get('detailed_logs', True)
+    args = (
+        task_id,
+        data.get('folder_path'),
+        data.get('image_name'),
+        data.get('width'),
+        data.get('height'),
+        data.get('dry_run', False),
+        data.get('smb_id'),
+        data.get('max_workers', 10),
+        data.get('detailed_logs', True)
+    )
 
-    if not all([folder_path, target_filename, width, height]):
-        return jsonify({"error": "Missing required fields"}), 400
+    thread = threading.Thread(target=scan_and_resize_task, args=args)
+    thread.start()
 
-    is_smb = False
-    walker = os.walk
-    
-    if smb_id:
-        setup_smb_session(smb_id)
-        is_smb = True
-        walker = smbclient.walk
-        if not smbclient.path.isdir(folder_path):
-             return jsonify({"error": "Directory does not exist"}), 404
-    elif not os.path.isdir(folder_path):
-        return jsonify({"error": "Directory does not exist"}), 404
-
-    found_files = []
-    files_to_process = []
-    processed_count = 0
-    details = [] 
-
-    logging.info(f"Scan started in {folder_path}. Dry Run: {dry_run}")
-
-    # 1. First, find all the files to process
-    for root, dirs, files in walker(folder_path):
-        logging.info(f"Scanning directory: {root}")
-        if detailed_logs:
-            details.append(f"[SCAN] Scanning: {root}")
-        if target_filename in files:
-            full_path = os.path.join(root, target_filename)
-            found_files.append(full_path)
-            
-            # --- SKIP IF BACKUP EXISTS ---
-            backup_prefix = f"{target_filename}.backup_"
-            has_backup = any(f.startswith(backup_prefix) for f in files)
-            
-            if has_backup:
-                msg = "Skipped (Backup already exists)"
-                details.append(f"[SKIPPED] {full_path} -> {msg}")
-                logging.info(f"Skipping {full_path} because a backup was found.")
-                continue
-            
-            files_to_process.append(full_path)
-
-    # 2. Now, process the files in parallel
-    if files_to_process:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_path = {
-                executor.submit(process_image, path, int(width), int(height), dry_run, is_smb): path 
-                for path in files_to_process
-            }
-
-            for future in as_completed(future_to_path):
-                path = future_to_path[future]
-                try:
-                    success, msg = future.result()
-                    status_str = "OK" if success else "FAIL"
-                    details.append(f"[{status_str}] {path} -> {msg}")
-                    
-                    if success:
-                        processed_count += 1
-                        logging.info(f"Processed: {path} - {msg}")
-                    else:
-                        logging.error(f"Failed: {path} - {msg}")
-                except Exception as exc:
-                    logging.error(f'{path} generated an exception: {exc}')
-                    details.append(f"[FAIL] {path} -> {exc}")
-
-    result = {
-        "status": "completed",
-        "dry_run": dry_run,
-        "scanned_path": folder_path,
-        "files_found": len(found_files),
-        "processed": processed_count,
-        "logs": sorted(details)
-    }
-    
-    return jsonify(result)
+    return jsonify({'task_id': task_id})
 
 @app.route('/scan-backups', methods=['POST'])
 def scan_backups():

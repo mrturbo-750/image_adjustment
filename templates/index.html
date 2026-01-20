@@ -259,7 +259,7 @@
         // --- RESIZE LOGIC ---
         async function triggerScan() {
             const output = document.getElementById('output');
-            output.innerHTML = 'Running...';
+            output.innerHTML = ''; // Clear previous logs
             
             const payload = {
                 folder_path: document.getElementById('folderPath').value,
@@ -277,22 +277,56 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
             });
-            const data = await res.json();
 
-            let logHtml = `<strong>Status:</strong> ${data.status} <br>`;
-            logHtml += `<strong>Files Found:</strong> ${data.files_found} <br>`;
-            logHtml += `<strong>Processed:</strong> ${data.processed} <br>`;
-            logHtml += `<strong>Mode:</strong> ${data.dry_run ? "DRY RUN (No changes made)" : "LIVE RUN"} <br><hr>`;
-            
-            if(data.logs) {
-                data.logs.forEach(line => {
-                    if(line.includes("[OK]")) logHtml += `<span class="log-success">${line}</span><br>`;
-                    else if(line.includes("[FAIL]")) logHtml += `<span class="log-error">${line}</span><br>`;
-                    else if(line.includes("[SCAN]")) logHtml += `<span class="log-scan">${line}</span><br>`;
-                    else logHtml += `<span class="log-info">${line}</span><br>`;
-                });
+            const data = await res.json();
+            const task_id = data.task_id;
+
+            if (!task_id) {
+                output.innerHTML = '<span class="log-error">Failed to start task.</span>';
+                return;
             }
-            output.innerHTML = logHtml;
+
+            output.innerHTML = 'Task started...<br>';
+
+            const eventSource = new EventSource(`/log-stream/${task_id}`);
+            let summaryData = {};
+
+            eventSource.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+
+                if (message.type === 'EOF') {
+                    eventSource.close();
+                    let summaryHtml = `<hr><strong>Status:</strong> Completed<br>`;
+                    summaryHtml += `<strong>Files Found:</strong> ${summaryData.files_found || 0}<br>`;
+                    summaryHtml += `<strong>Processed:</strong> ${summaryData.processed || 0}<br>`;
+                    output.innerHTML += summaryHtml;
+                    return;
+                }
+                
+                if (message.type === 'summary') {
+                    summaryData = message.data;
+                    return;
+                }
+
+                if (message.type === 'log') {
+                    const level = message.level;
+                    const logLine = message.message;
+                    let logClass = 'log-info';
+                    if (level === 'success') logClass = 'log-success';
+                    else if (level === 'error') logClass = 'log-error';
+                    else if (level === 'scan') logClass = 'log-scan';
+                    else if (level === 'skipped') logClass = 'log-info'; // or another color
+                    
+                    output.innerHTML += `<span class="${logClass}">${logLine}</span><br>`;
+                }
+                // Auto-scroll
+                output.scrollTop = output.scrollHeight;
+            };
+
+            eventSource.onerror = function(err) {
+                output.innerHTML += '<span class="log-error">Connection error. Please try again.</span><br>';
+                eventSource.close();
+            };
         }
 
         // --- RESTORE LOGIC ---
