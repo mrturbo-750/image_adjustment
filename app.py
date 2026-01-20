@@ -233,6 +233,7 @@ def scan_and_resize():
     dry_run = data.get('dry_run', False)
     smb_id = data.get('smb_id')
     max_workers = data.get('max_workers', 10)
+    detailed_logs = data.get('detailed_logs', True)
 
     if not all([folder_path, target_filename, width, height]):
         return jsonify({"error": "Missing required fields"}), 400
@@ -259,7 +260,8 @@ def scan_and_resize():
     # 1. First, find all the files to process
     for root, dirs, files in walker(folder_path):
         logging.info(f"Scanning directory: {root}")
-        details.append(f"[SCAN] Scanning: {root}")
+        if detailed_logs:
+            details.append(f"[SCAN] Scanning: {root}")
         if target_filename in files:
             full_path = os.path.join(root, target_filename)
             found_files.append(full_path)

@@ -102,6 +102,13 @@
             </label>
         </div>
 
+        <div class="form-group">
+            <label style="display:inline-flex; align-items: center; cursor: pointer;">
+                <input type="checkbox" id="detailedLogs" checked style="width:auto; margin-right: 10px;">
+                <strong>Show detailed scan logs</strong>
+            </label>
+        </div>
+
         <button class="btn btn-primary" onclick="triggerScan()">Start Process</button>
         
         <div id="output"></div>
@@ -261,7 +268,8 @@
                 height: document.getElementById('height').value,
                 dry_run: document.getElementById('dryRun').checked,
                 smb_id: document.getElementById('smbSelect').value,
-                max_workers: parseInt(document.getElementById('maxWorkers').value, 10) || 10
+                max_workers: parseInt(document.getElementById('maxWorkers').value, 10) || 10,
+                detailed_logs: document.getElementById('detailedLogs').checked
             };
 
             const res = await fetch('/scan-and-resize', {
