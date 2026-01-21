@@ -290,16 +290,49 @@
 
             const eventSource = new EventSource(`/log-stream/${task_id}`);
             let summaryData = {};
+            let logBuffer = [];
+            let animationFrameId = null;
+
+            function renderLogs() {
+                if (logBuffer.length === 0) {
+                    animationFrameId = null;
+                    return;
+                }
+
+                const fragment = document.createDocumentFragment();
+                logBuffer.forEach(log => {
+                    const span = document.createElement('span');
+                    span.className = log.logClass;
+                    span.textContent = log.logLine;
+                    fragment.appendChild(span);
+                    fragment.appendChild(document.createElement('br'));
+                });
+                
+                output.appendChild(fragment);
+                logBuffer = []; // Clear buffer
+
+                output.scrollTop = output.scrollHeight; // Auto-scroll
+                animationFrameId = requestAnimationFrame(renderLogs);
+            }
 
             eventSource.onmessage = function(event) {
                 const message = JSON.parse(event.data);
 
                 if (message.type === 'EOF') {
+                    if (animationFrameId) {
+                        cancelAnimationFrame(animationFrameId);
+                    }
+                    renderLogs(); // Final render of any remaining logs
                     eventSource.close();
+
                     let summaryHtml = `<hr><strong>Status:</strong> Completed<br>`;
                     summaryHtml += `<strong>Files Found:</strong> ${summaryData.files_found || 0}<br>`;
                     summaryHtml += `<strong>Processed:</strong> ${summaryData.processed || 0}<br>`;
-                    output.innerHTML += summaryHtml;
+                    
+                    const summarySpan = document.createElement('span');
+                    summarySpan.innerHTML = summaryHtml;
+                    output.appendChild(summarySpan);
+                    output.scrollTop = output.scrollHeight;
                     return;
                 }
                 
@@ -315,12 +348,14 @@
                     if (level === 'success') logClass = 'log-success';
                     else if (level === 'error') logClass = 'log-error';
                     else if (level === 'scan') logClass = 'log-scan';
-                    else if (level === 'skipped') logClass = 'log-info'; // or another color
+                    else if (level === 'skipped') logClass = 'log-info';
                     
-                    output.innerHTML += `<span class="${logClass}">${logLine}</span><br>`;
+                    logBuffer.push({logClass, logLine});
+
+                    if (!animationFrameId) {
+                        animationFrameId = requestAnimationFrame(renderLogs);
+                    }
                 }
-                // Auto-scroll
-                output.scrollTop = output.scrollHeight;
             };
 
             eventSource.onerror = function(err) {
