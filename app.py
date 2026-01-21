@@ -301,6 +301,8 @@ def scan_and_resize_task(task_id, folder_path, target_filename, width, height, d
                 
                 files_to_process.append(full_path)
 
+        files_to_process = list(set(files_to_process))
+
         if files_to_process:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_path = {
