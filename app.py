@@ -225,12 +225,16 @@ def process_image(file_path, width, height, dry_run=False, is_smb=False):
         
         # 2. Resize Image
         if is_smb:
+            # Read the entire file into memory to avoid locking issues on SMB shares
             with smbclient.open_file(file_path, 'rb') as f:
-                img = Image.open(f)
+                image_data = f.read()
+
+            with Image.open(io.BytesIO(image_data)) as img:
+                img_format = img.format
                 resized_img = img.resize((width, height))
                 
                 with io.BytesIO() as buffer:
-                    resized_img.save(buffer, format=img.format)
+                    resized_img.save(buffer, format=img_format)
                     buffer.seek(0)
                     with smbclient.open_file(file_path, 'wb') as remote_f:
                         shutil.copyfileobj(buffer, remote_f)
