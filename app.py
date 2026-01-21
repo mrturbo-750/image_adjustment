@@ -391,42 +391,89 @@ def scan_backups():
     
     return jsonify({"backups": backups})
 
+def process_restore(backup_path, original_path, is_smb=False):
+    """Restores a single backup file and deletes it."""
+    try:
+        if is_smb:
+            # 1. Overwrite original with backup
+            smb_shutil.copyfile(backup_path, original_path)
+            # 2. DELETE the backup file
+            smbclient.remove(backup_path)
+        else:
+            # 1. Overwrite original with backup
+            shutil.copy2(backup_path, original_path)
+            # 2. DELETE the backup file
+            os.remove(backup_path)
+        
+        return True, f"Restored & Deleted Backup: {os.path.basename(original_path)}"
+    except Exception as e:
+        return False, f"Error restoring {backup_path}: {str(e)}"
+
+def restore_backups_task(task_id, files_to_restore, smb_id, max_workers):
+    q = task_queues[task_id]
+
+    def log(level, message):
+        q.put({'type': 'log', 'level': level, 'message': message})
+
+    try:
+        is_smb = False
+        if smb_id:
+            try:
+                setup_smb_session(smb_id)
+                is_smb = True
+            except Exception as e:
+                log('error', f"SMB connection failed: {e}")
+                q.put({'type': 'EOF'})
+                return
+
+        restored_count = 0
+        log('info', f"Restoring {len(files_to_restore)} files...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_item = {
+                executor.submit(process_restore, item['backup_path'], item['original_path'], is_smb): item
+                for item in files_to_restore
+            }
+
+            for future in as_completed(future_to_item):
+                item = future_to_item[future]
+                try:
+                    success, msg = future.result()
+                    log('success' if success else 'error', msg)
+                    if success:
+                        restored_count += 1
+                except Exception as exc:
+                    log('error', f'Error processing {item["backup_path"]}: {exc}')
+        
+        summary_data = {
+            "files_to_restore": len(files_to_restore),
+            "restored": restored_count,
+        }
+        q.put({'type': 'summary', 'data': summary_data})
+        q.put({'type': 'EOF'})
+
+    except Exception as e:
+        log('error', f"An unexpected error occurred: {str(e)}")
+        q.put({'type': 'EOF'})
+
 @app.route('/restore', methods=['POST'])
 def restore_files():
     """Restores selected backup files and DELETES the backup."""
     data = request.get_json()
-    files_to_restore = data.get('files') 
-    smb_id = data.get('smb_id')
-    
-    restored_count = 0
-    logs = []
+    task_id = str(uuid.uuid4())
+    task_queues[task_id] = Queue()
 
-    for item in files_to_restore:
-        backup = item['backup_path']
-        original = item['original_path']
-        
-        if smb_id:
-            setup_smb_session(smb_id)
-        
-        try:
-            # 1. Overwrite original with backup
-            if smb_id:
-                smbclient.shutil.copyfile(backup, original)
-            else:
-                shutil.copy2(backup, original)
-            
-            # 2. DELETE the backup file
-            if smb_id:
-                smbclient.remove(backup)
-            else:
-                os.remove(backup)
-            
-            restored_count += 1
-            logs.append(f"Restored & Deleted Backup: {os.path.basename(original)}")
-        except Exception as e:
-            logs.append(f"Error restoring {backup}: {str(e)}")
+    args = (
+        task_id,
+        data.get('files'),
+        data.get('smb_id'),
+        data.get('max_workers', 10)
+    )
 
-    return jsonify({"status": "completed", "restored": restored_count, "logs": logs})
+    thread = threading.Thread(target=restore_backups_task, args=args)
+    thread.start()
+
+    return jsonify({'task_id': task_id})
 
 # --- MAIN ENTRY POINT ---
 if __name__ == '__main__':
